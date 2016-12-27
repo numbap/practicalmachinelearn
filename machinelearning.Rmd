@@ -1,0 +1,277 @@
+---
+title: "Practical Machine Learning"
+author: "Patrick"
+date: "December 26, 2016"
+output: html_document
+---
+
+
+# Practical Machine Learning
+
+
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+In order to run this code, you should first download this data into the working directory.
+
+### HAR Dataset for benchmarking
+
+We are using a dataset with 5 classes: 
+
+ * A) sitting-down
+ * B) standing-up
+ * C) standing
+ * D) walking
+ * E) sitting
+
+They were collected on 8 hours of activities of 4 healthy subjects at PUC-RIO in Brazil, a contry that's as beautiful as it is deadly. (Just like my biceps) 
+
+
+### What you should submit
+
+The goal of your project is to predict the manner in which the subjects did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+### Peer Review Portion
+
+Your submission for the Peer Review portion should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+
+### Course Project Prediction Quiz Portion
+
+Apply your machine learning algorithm to the 20 test cases available in the test data above and submit your predictions in appropriate format to the Course Project Prediction Quiz for automated grading.
+
+### Reproducibility
+
+Due to security concerns with the exchange of R code, your code will not be run during the evaluation by your classmates. Please be sure that if they download the repo, they will be able to view the compiled HTML version of your analysis.
+
+
+
+# The Code
+
+### Step 1: Load Data and Libraries
+
+First, we'll load libraries that will be used during the analysis.
+
+```{R message=F, warning=F}
+library(dplyr)
+library(caret)
+library(gbm)
+library(rpart)
+set.seed(10101)
+```
+
+Once you've downloaded the data to your working directory, run the following code.
+
+
+```{R}
+training <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+training$classe <- as.factor(training$classe)
+
+dim(training)
+dim(testing)
+```
+
+Since the official testing set contains not classe column, we will create a new training/testing subset from the original training set.
+
+```{R}
+inTrain <- createDataPartition(y=training$classe, p=0.8, list=FALSE)
+myTraining <- training[inTrain, ]; myTesting <- training[-inTrain, ];
+dim(myTraining); dim(myTesting)
+```
+
+And now we'll take a quick look at the categories we're trying to predict.
+
+```{R}
+plot(myTraining$classe, col="blue", main="Levels of the variable classe within Training set", xlab="classe levels", ylab="Frequency")
+```
+
+### Step 2: Clean the Data
+
+Remove columns with high NA percentage. 
+
+```{R}
+newTraining <- myTraining
+
+highNA <- sapply(colnames(newTraining), function(x) if(sum(is.na(newTraining[, x])) > (70/100)*nrow(newTraining)){return(TRUE) }else{ return(FALSE) } )
+newTraining <- newTraining[, !highNA]
+```
+
+
+Remove NAs and replace with zeroes.
+
+```{R}
+newTesting <- myTesting
+
+newTraining <- newTraining[,colSums(is.na(newTraining)) == 0]
+newTesting <- newTesting[,colSums(is.na(newTesting)) == 0]
+```
+
+Make sure both column sets are equal.
+
+```{R}
+trainingSpecs <- colnames(myTraining)[1:length(colnames(myTraining))]
+testingSpecs <- colnames(myTesting)[1:length(colnames(myTesting))]
+all.equal(trainingSpecs, testingSpecs)
+```
+
+Remove near-zero variance columns.
+
+```{R}
+nearZeroData <- nearZeroVar(newTraining, saveMetrics = TRUE)
+newTraining <- newTraining[,names(newTraining) %in% row.names(nearZeroData)]
+```
+
+Remove the first 6 columns, since they are useless.
+
+```{R}
+newTraining <- newTraining[, -(1:6)]
+```
+
+Reduce data frame to only columns that are 80% correlated.
+
+```{R}
+M <- abs(cor(newTraining[,-54]))
+diag(M) <- 0
+x <- which(M > 0.8, arr.ind = T)
+x <- as.data.frame(x[,1])
+newTraining <- newTraining[, c(unique(x[,1]), 54)]
+
+```
+
+Set up trainControl for models.
+
+```{R}
+tc <- trainControl(method = "cv", number = 7, verboseIter=FALSE , preProcOptions="pca", allowParallel=TRUE)
+```
+
+Remove unnecessary columns from testing data. 
+
+```{R}
+newTesting <- testing[,names(myTesting) %in% names(newTraining)]
+```
+
+### Step 3: Train the Models
+
+
+Apply 7 models.
+
+```{R message=F, warning=F}
+modRF <- train(classe ~ ., data = newTraining, method = "rf", trControl= tc)
+modBAYES <- train(classe ~ ., data = newTraining, method = "bayesglm", trControl= tc)
+modGAMLOESS <- train(classe ~ ., data = newTraining, method = "gamLoess", trControl= tc)
+modFDA <- train(classe ~ ., data = newTraining, method = "fda", trControl= tc)
+modBSTLM <- train(classe ~ ., data = newTraining, method = "BstLm", trControl= tc)
+modKNN <- train(classe ~ ., data = newTraining, method = "knn", trControl= tc)
+modTREEBAG <- train(classe ~ ., data = newTraining, method = "treebag", trControl= tc)
+```
+
+Benchmark each model.
+
+```{R}
+Accuracies <- c(
+	max(modRF$results$Accuracy),
+        max(modBAYES$results$Accuracy),
+        max(modGAMLOESS$results$Accuracy),
+        max(modFDA$results$Accuracy),
+        max(modBSTLM$results$Accuracy),
+        max(modKNN$results$Accuracy),
+        max(modTREEBAG$results$Accuracy))
+
+Kappas <- c(
+	max(modRF$results$Kappa),
+        max(modBAYES$results$Kappa),
+        max(modGAMLOESS$results$Kappa),
+        max(modFDA$results$Accuracy),
+        max(modBSTLM$results$Accuracy),
+        max(modKNN$results$Accuracy),
+        max(modTREEBAG$results$Accuracy))
+
+benchmarkStats <- as.data.frame(rbind(Accuracies, Kappas))
+names(benchmarkStats) <- c("RF", "BayesGLM", "GamLoess", "FDA", "BSTLM", "KNN", "TreeBag")
+benchmarkStats
+```
+
+### Step 4: Out-of-Sample Error & Cross Validation
+
+Use these models to predict against the sample testing data.
+
+```{R message=F, warning=F}
+predRF <- predict(modRF, newTesting)
+predBAYES <- predict(modBAYES, newTesting)
+predGAMLOESS <- predict(modGAMLOESS, newTesting)
+predFDA <- predict(modFDA, newTesting)
+predBSTLM <- predict(modBSTLM, newTesting)
+predKNN <- predict(modKNN, newTesting)
+predTREEBAG <- predict(modTREEBAG, newTesting)
+```
+
+```{R}
+summary(predRF)
+summary(predBAYES)
+summary(predGAMLOESS)
+summary(predFDA)
+summary(predBSTLM)
+summary(predKNN)
+summary(predTREEBAG)
+
+
+predRF
+predBAYES
+predGAMLOESS
+predFDA
+predBSTLM
+predKNN
+predTREEBAG
+
+```
+
+
+
+Apply best-performing models to the final testing data. 
+
+```{R message=F, warning=F}
+predRF <- predict(modRF, testing)
+predBAYES <- predict(modBAYES, testing)
+predGAMLOESS <- predict(modGAMLOESS, testing)
+predFDA <- predict(modFDA, testing)
+predBSTLM <- predict(modBSTLM, testing)
+predKNN <- predict(modKNN, testing)
+predTREEBAG <- predict(modTREEBAG, testing)
+```
+
+```{R}
+summary(predRF)
+summary(predBAYES)
+summary(predGAMLOESS)
+summary(predFDA)
+summary(predBSTLM)
+summary(predKNN)
+summary(predTREEBAG)
+
+predRF
+predBAYES
+predGAMLOESS
+predFDA
+predBSTLM
+predKNN
+predTREEBAG
+
+```
+
+
+### Conclusion
+
+Based on the analysis and testing, it seems ckear that the TreeBag and Random Forest algorithms give the best results. 
